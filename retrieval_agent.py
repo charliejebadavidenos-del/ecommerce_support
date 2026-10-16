@@ -69,9 +69,9 @@ def retrieve_faqs(
     query_words -= {"was", "were", "have", "has", "been", "should", "what"}
 
     # Normalize common order-tracking questions.
-    if (
+    if "order" in query_words and (
         "where" in query_words
-        and "order" in query_words
+        or "status" in query_words
     ):
         query_words.add("track")
 

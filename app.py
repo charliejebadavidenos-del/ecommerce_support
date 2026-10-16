@@ -1,8 +1,12 @@
 import logging
-
+import sqlite3
+from contextlib import closing
+import requests
 import streamlit as st
 
 from workflow import workflow
+from learning_agent import initialize_learning_feedback, record_retrieval_feedback
+from storage import DB_PATH
 
 from storage import (
     save_ticket,
@@ -11,6 +15,18 @@ from storage import (
     load_resolution,
     approve_resolution,
 )
+
+def existing_feedback(query_ticket_id: str, historical_ticket_id: str) -> str | None:
+    """Prevent repeated votes for the same ticket/suggestion pair."""
+    with closing(sqlite3.connect(DB_PATH)) as connection:
+        row = connection.execute(
+            """SELECT feedback FROM retrieval_feedback
+               WHERE query_ticket_id = ? AND historical_ticket_id = ?
+               ORDER BY feedback_id DESC LIMIT 1""",
+            (query_ticket_id, historical_ticket_id),
+        ).fetchone()
+    return row[0] if row else None
+
 
 st.set_page_config(
     page_title="E-commerce Support",
@@ -39,13 +55,21 @@ if submitted:
     else:
         try:
             with st.spinner("Processing ticket..."):
-                result = workflow.invoke({
-                    "ticket_text": ticket_text,
-                    "cleaned_text": "",
-                    "order_id": None,
-                })
 
-                ticket_id = save_ticket(result)
+                api_response = requests.post(
+                    "http://127.0.0.1:8000/ticket",
+                    json={"ticket_text": ticket_text},
+                    timeout=120
+                )
+
+                api_response.raise_for_status()
+
+                api_data = api_response.json()
+
+                ticket_id = api_data["ticket_id"]
+                result = api_data["result"]
+
+
 
             st.session_state["latest_ticket"] = {
                 "ticket_id": ticket_id,
@@ -106,32 +130,59 @@ if "latest_ticket" in st.session_state:
         else:
             st.write("No matching FAQ found.")
 
-##Historical resolutions
+## Historical resolutions and human feedback
 
     st.subheader("Suggested Historical Resolutions")
-
     suggestions = result.get("suggested_resolutions", [])
+    query_ticket_id = saved["ticket_id"]
 
     if suggestions:
-        for item in suggestions:
-            with st.expander(
-                f"Ticket {item['ticket_id']} "
-                f"- Similarity: {item['similarity']:.0%}"
-            ):
-                st.write(
-                    "**Previous customer issue:**",
-                    item["original_ticket"]
-                )
-
-                st.write(
-                    "**Approved resolution:**",
-                    item["resolution"]
-                )
-
-                st.info(
-                    "For human review only. "
-                    "Do not automatically send this resolution."
-                )
+        try:
+            initialize_learning_feedback()
+        except Exception:
+            logging.exception("Feedback table initialization failed")
+            st.error("Feedback storage is unavailable. Existing suggestions remain viewable.")
+        else:
+            for item in suggestions:
+                historical_id = item["ticket_id"]
+                with st.expander(
+                    f"Ticket {historical_id} - Similarity: {item['similarity']:.0%}"
+                ):
+                    st.write("**Previous customer issue:**", item["original_ticket"])
+                    st.write("**Approved resolution:**", item["resolution"])
+                    st.caption(
+                        f"Learning score: {item.get('learning_score', item['similarity']):.4f}"
+                    )
+                    st.info("For human review only. Do not automatically send this resolution.")
+                    try:
+                        prior_vote = existing_feedback(query_ticket_id, historical_id)
+                    except Exception:
+                        logging.exception("Unable to read retrieval feedback")
+                        st.error("Unable to check existing feedback.")
+                        continue
+                    if prior_vote:
+                        st.success(f"Feedback already recorded: {prior_vote.replace('_', ' ').title()}")
+                    else:
+                        helpful_col, unhelpful_col = st.columns(2)
+                        for col, feedback, label in (
+                            (helpful_col, "helpful", "👍 Helpful"),
+                            (unhelpful_col, "not_helpful", "👎 Not Helpful"),
+                        ):
+                            if col.button(
+                                label,
+                                key=f"feedback_{query_ticket_id}_{historical_id}_{feedback}",
+                            ):
+                                try:
+                                    record_retrieval_feedback(
+                                        query_ticket_id, historical_id, feedback
+                                    )
+                                except (ValueError, sqlite3.Error) as error:
+                                    st.error(f"Could not save feedback: {error}")
+                                except Exception:
+                                    logging.exception("Unexpected feedback recording error")
+                                    st.error("Could not save feedback. Check the terminal.")
+                                else:
+                                    st.rerun()
     else:
         st.info("No matching approved historical resolutions found.")
 

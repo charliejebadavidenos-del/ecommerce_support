@@ -6,6 +6,11 @@ from sentence_transformers import SentenceTransformer
 from storage import load_approved_resolutions
 from test_delivery_safety import safe_delivery_match
 
+from learning_agent import (
+    get_retrieval_feedback_summary,
+    calculate_learning_score
+)
+
 
 _model = None
 
@@ -107,11 +112,9 @@ def match_semantic_resolutions(
     matches = []
 
     for record_index, score in zip(indices[0], scores[0]):
-        if record_index == -1:
+        if record_index == -1 or score < min_similarity:
             continue
 
-        if score < min_similarity:
-            continue
 
         record = records[record_index]
 
@@ -121,14 +124,31 @@ def match_semantic_resolutions(
         ):
             continue
 
+##Feedback Processing
+
+        feedback = get_retrieval_feedback_summary(
+            record["ticket_id"]
+        )
+
+        learning_score = calculate_learning_score(
+            similarity=float(score),
+            helpful=feedback["helpful"],
+            not_helpful=feedback["not_helpful"]
+        )
+
         matches.append({
             "ticket_id": record["ticket_id"],
             "original_ticket": record["original_ticket"],
             "resolution": record["resolution"],
-            "similarity": float(score)
+            "similarity": float(score),
+            "learning_score": learning_score,
+            "helpful_feedback": feedback["helpful"],
+            "not_helpful_feedback": feedback["not_helpful"]
         })
 
-        if len(matches) >= limit:
-            break
-
-    return matches
+    # Rank all eligible matches after applying feedback, then limit results.
+    matches.sort(
+        key=lambda item: item["learning_score"],
+        reverse=True
+    )
+    return matches[:limit]

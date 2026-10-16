@@ -42,6 +42,7 @@ def detect_intent(text: str) -> str:
             "where is my parcel",
             "track my package",
             "delivery status",
+            "order status",
         ],
         "request_refund": [
             "want a refund",

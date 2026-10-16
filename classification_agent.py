@@ -1,3 +1,28 @@
+from pathlib import Path
+from functools import lru_cache
+
+import joblib
+
+
+MODEL_PATH = (
+    Path(__file__).resolve().parent.parent
+    / "models"
+    / "ticket_classifier_lr.joblib"
+)
+
+
+@lru_cache(maxsize=1)
+def load_classification_model():
+    return joblib.load(MODEL_PATH)
+
+
+def predict_ticket_category(ticket_text: str) -> str:
+    if not ticket_text or not ticket_text.strip():
+        return "Needs Review"
+
+    model = load_classification_model()
+    return str(model.predict([ticket_text])[0])
+
 def classify_ticket(intent: str) -> dict:
     routing = {
         "delivery_status": {
